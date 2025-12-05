@@ -16,6 +16,7 @@ from homeassistant.const import ATTR_TEMPERATURE, Platform, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util.unit_conversion import TemperatureConverter
 
 from . import DreoConfigEntry
 from .const import (
@@ -407,12 +408,32 @@ class DreoHeaterClimate(DreoEntity, ClimateEntity):
             self._attr_min_temp = 41
             self._attr_max_temp = 85
 
+        # Device reports temps in Fahrenheit, convert to display unit
+        self._attr_min_temp = self._convert_temperature(self._attr_min_temp)
+        self._attr_max_temp = self._convert_temperature(self._attr_max_temp)
+
         if isinstance(coordinator.data, DreoHeaterDeviceData):
-            self._attr_target_temperature = coordinator.data.target_temperature
-            self._attr_current_temperature = coordinator.data.current_temperature
+            self._attr_target_temperature = self._convert_temperature(coordinator.data.target_temperature)
+            self._attr_current_temperature = self._convert_temperature(coordinator.data.current_temperature)
         else:
             self._attr_target_temperature = None
             self._attr_current_temperature = None
+
+    def _convert_temperature(self, temp: float | None) -> float | None:
+        """Convert temperature from device unit (Fahrenheit) to display unit."""
+        if temp is None:
+            return None
+        converted = TemperatureConverter.convert(temp, UnitOfTemperature.FAHRENHEIT, self._attr_temperature_unit)
+        rounded = round(converted)
+        return rounded
+
+    def _convert_temperature_to_device(self, temp: float | None) -> float | None:
+        """Convert temperature from display unit to device unit (Fahrenheit)."""
+        if temp is None:
+            return None
+        converted = TemperatureConverter.convert(temp, self._attr_temperature_unit, UnitOfTemperature.FAHRENHEIT)
+        rounded = round(converted)
+        return rounded
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -460,14 +481,16 @@ class DreoHeaterClimate(DreoEntity, ClimateEntity):
             if self._attr_hvac_mode in [HVACMode.HEAT]:
                 self._attr_supported_features |= ClimateEntityFeature.PRESET_MODE
 
-        self._attr_current_temperature = (
+        self._attr_current_temperature = self._convert_temperature(
             data.current_temperature
             if data.current_temperature is not None
             else self._attr_current_temperature
         )
 
         if data.target_temperature is not None:
-            self._attr_target_temperature = data.target_temperature
+            self._attr_target_temperature = self._convert_temperature(
+                data.target_temperature
+            )
 
         super()._handle_coordinator_update()
         self.async_write_ha_state()
@@ -490,8 +513,11 @@ class DreoHeaterClimate(DreoEntity, ClimateEntity):
 
         temperature = max(self._attr_min_temp, min(self._attr_max_temp, temperature))
 
+        # Convert from display unit back to Fahrenheit for device (already rounded)
+        device_temperature = self._convert_temperature_to_device(temperature)
+
         await self.async_send_command_and_update(
-            DreoErrorCode.SET_TEMPERATURE_FAILED, ecolevel=int(temperature)
+            DreoErrorCode.SET_TEMPERATURE_FAILED, ecolevel=device_temperature
         )
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
